@@ -102,7 +102,7 @@
 // 세션 스토리지 클리어 (URL에 ?reset 파라미터가 있으면)
 if (window.location.search.includes('reset')) {
   sessionStorage.clear();
-  window.location.href = 'http://localhost:8080/teamstoexel.html';
+  window.location.href = window.location.origin + window.location.pathname;
 }
 const CLIENT_ID = 'ef1fd28e-b215-4db6-9c36-2fbb41341fc2';
 const TENANT_ID = '00ee4b27-8fc3-407f-9560-a8b09b32c69d';
@@ -110,7 +110,7 @@ const msalConfig = {
   auth: {
     clientId: CLIENT_ID,
     authority: `https://login.microsoftonline.com/${TENANT_ID}`,
-    redirectUri: 'http://localhost:8080/teamstoexel.html'
+    redirectUri: window.location.origin + window.location.pathname
   },
   cache: { cacheLocation: 'sessionStorage' }
 };
