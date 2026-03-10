@@ -1,0 +1,646 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <title>Teams → Excel 동기화</title>
+  <script src="https://cdn.jsdelivr.net/npm/@azure/msal-browser@2.39.0/lib/msal-browser.min.js"></script>
+  <style>
+    * { box-sizing: border-box; font-family: 'Segoe UI', sans-serif; }
+    body { max-width: 900px; margin: 40px auto; padding: 0 20px; background: #f3f2f1; }
+    h1 { color: #464775; }
+    .card { background: white; border-radius: 8px; padding: 20px; margin: 16px 0; box-shadow: 0 2px 8px rgba(0,0,0,0.08); }
+    button { background: #464775; color: white; border: none; padding: 10px 20px; border-radius: 4px; cursor: pointer; font-size: 14px; }
+    button:hover { background: #6264a7; }
+    button:disabled { background: #ccc; cursor: not-allowed; }
+    select, input { width: 100%; padding: 8px; margin: 8px 0; border: 1px solid #ddd; border-radius: 4px; font-size: 14px; }
+    .msg-row { display:flex; align-items:flex-start; gap:10px; padding:10px; margin:6px 0; background:#fff; border:1px solid #e0e0e0; border-radius:8px; }
+    .msg-row input[type="checkbox"] { margin-top:4px; width:18px; height:18px; flex-shrink:0; }
+    .msg-bubble { flex:1; background:#f0f0f0; padding:10px 14px; border-radius:12px; min-width:0; }
+    .msg-header { display:flex; justify-content:space-between; align-items:center; margin-bottom:6px; }
+    .sender { font-weight:bold; color:#464775; }
+    .time { color:#888; font-size:11px; }
+    .content { color:#333; line-height:1.5; word-break:break-word; }
+    #status { padding: 10px; border-radius: 4px; margin: 8px 0; display: none; }
+    .success { background: #dff6dd; color: #107c10; display: block !important; }
+    .error   { background: #fde7e9; color: #a80000; display: block !important; }
+    .info    { background: #deecf9; color: #0078d4; display: block !important; }
+    label { font-size: 13px; color: #555; }
+    #msgList { max-height: 400px; overflow-y: auto; }
+    .chat-item { display:flex; align-items:center; gap:12px; padding:12px; border-radius:8px; cursor:pointer; border:2px solid transparent; margin:4px 0; background:#f5f5f5; }
+    .chat-item:hover { background:#e8e8e8; }
+    .chat-item.selected { border-color:#464775; background:#e8e6f7; }
+    .chat-avatar { width:40px; height:40px; border-radius:50%; background:#464775; color:white; display:flex; align-items:center; justify-content:center; font-weight:bold; font-size:16px; flex-shrink:0; }
+    .chat-info { flex:1; min-width:0; }
+    .chat-name { font-weight:bold; color:#333; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+    .chat-preview { font-size:12px; color:#666; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+    .chat-type { font-size:10px; background:#464775; color:white; padding:2px 6px; border-radius:10px; }
+  </style>
+</head>
+<body>
+<h1>🔗 Teams 그룹 채팅 → Excel 동기화</h1>
+<div id="status"></div>
+<div class="card">
+  <h3>① Microsoft 로그인</h3>
+  <p id="loginInfo">로그인이 필요합니다.</p>
+  <button id="btnLogin" onclick="login()" disabled>Microsoft 계정으로 로그인</button>
+  <button id="btnLogout" onclick="logout()" style="display:none; background:#a80000;">로그아웃</button>
+</div>
+<div class="card">
+  <h3>② 채팅 선택</h3>
+  <button onclick="loadChats()" id="btnLoadChats" disabled>채팅 목록 불러오기</button>
+  <div id="chatList" style="max-height:300px; overflow-y:auto; margin-top:10px;"></div>
+  <input type="hidden" id="chatSelect" value="">
+</div>
+<div class="card">
+  <h3>③ 메시지 조회</h3>
+  <label>기간 선택</label>
+  <div style="display:flex; gap:10px; margin:8px 0;">
+    <input type="date" id="startDate" style="flex:1;">
+    <span style="line-height:32px;">~</span>
+    <input type="date" id="endDate" style="flex:1;">
+  </div>
+  <button onclick="loadMessages()" id="btnLoadMsgs" disabled>메시지 불러오기</button>
+  <button onclick="loadAllMessages()" id="btnLoadAll" disabled style="background:#107c10;">전체 메시지 불러오기</button>
+  <div id="msgControls" style="display:none; margin: 10px 0;">
+    <button onclick="selectAll(true)" style="background:#0078d4; padding:6px 12px; font-size:12px;">전체 선택</button>
+    <button onclick="selectAll(false)" style="background:#666; padding:6px 12px; font-size:12px;">선택 해제</button>
+    <span id="selectedCount" style="margin-left:10px; color:#666;"></span>
+  </div>
+  <div id="msgList"></div>
+</div>
+<div class="card">
+  <h3>④ 주간 보고서 파싱</h3>
+  <p style="font-size:13px; color:#666; margin-bottom:10px;">선택한 메시지에서 목표/과제/결과를 자동 추출합니다.</p>
+  <button onclick="parseToReport()" id="btnParse" disabled style="background:#0078d4;">🤖 메시지 분석하여 보고서 생성</button>
+  <div id="reportPreview" style="display:none; margin-top:15px;">
+    <h4 style="margin:10px 0;">📋 추출된 보고서 데이터</h4>
+    <div id="reportData" style="background:#f9f9f9; padding:15px; border-radius:8px; font-size:13px;"></div>
+  </div>
+</div>
+<div class="card">
+  <h3>⑤ Excel 설정 (본인 OneDrive)</h3>
+  <label>OneDrive 파일 경로 (예: /문서/주간보고.xlsx)</label>
+  <input type="text" id="excelUrl" value="/주간보고.xlsx" style="font-size:12px;">
+  <p style="font-size:11px; color:#888; margin:4px 0;">※ 공유 파일은 관리자 권한 필요. 본인 OneDrive에 Excel 파일을 먼저 만드세요.</p>
+  <label>시트 이름</label>
+  <input type="text" id="sheetName" placeholder="Sheet1" value="Sheet1">
+  <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px; margin:10px 0;">
+    <div><label>월 컬럼</label><input type="text" id="colMonth" value="A" style="width:100%;"></div>
+    <div><label>주차 컬럼</label><input type="text" id="colWeek" value="B" style="width:100%;"></div>
+    <div><label>목표 컬럼</label><input type="text" id="colGoal" value="C" style="width:100%;"></div>
+    <div><label>목표달성기한 컬럼</label><input type="text" id="colGoalDeadline" value="D" style="width:100%;"></div>
+    <div><label>과제 컬럼</label><input type="text" id="colTask" value="E" style="width:100%;"></div>
+    <div><label>과제달성기한 컬럼</label><input type="text" id="colTaskDeadline" value="F" style="width:100%;"></div>
+    <div><label>금주결과 컬럼</label><input type="text" id="colResult" value="G" style="width:100%;"></div>
+    <div><label>주간요약 컬럼</label><input type="text" id="colSummary" value="H" style="width:100%;"></div>
+  </div>
+  <label>시작 행 번호</label>
+  <input type="number" id="startRow" value="2" min="1" style="width:100px;">
+  <button onclick="syncToExcel()" id="btnSync" disabled>📊 Excel에 보고서 추가</button>
+</div>
+<script>
+// 세션 스토리지 클리어 (URL에 ?reset 파라미터가 있으면)
+if (window.location.search.includes('reset')) {
+  sessionStorage.clear();
+  window.location.href = 'http://localhost:8080/teamstoexel.html';
+}
+const CLIENT_ID = 'ef1fd28e-b215-4db6-9c36-2fbb41341fc2';
+const TENANT_ID = '00ee4b27-8fc3-407f-9560-a8b09b32c69d';
+const msalConfig = {
+  auth: {
+    clientId: CLIENT_ID,
+    authority: `https://login.microsoftonline.com/${TENANT_ID}`,
+    redirectUri: 'http://localhost:8080/teamstoexel.html'
+  },
+  cache: { cacheLocation: 'sessionStorage' }
+};
+const scopes = ['Chat.Read', 'Files.ReadWrite', 'User.Read'];
+let msalInstance = null;
+let currentAccount = null;
+let messages = [];
+let nextLink = null;
+let parsedReport = null;
+
+async function initMsal() {
+  // 팝업 내부인지 확인 - 팝업이면 아무것도 하지 않음
+  if (window.opener && window.opener !== window) {
+    console.log('팝업 창 감지됨 - 초기화 건너뜀');
+    return;
+  }
+  // MSAL 라이브러리 로드 대기
+  let attempts = 0;
+  while (typeof msal === 'undefined' && attempts < 50) {
+    await new Promise(r => setTimeout(r, 100));
+    attempts++;
+  }
+  if (typeof msal === 'undefined') {
+    showStatus('MSAL 라이브러리 로드 실패. 인터넷 연결을 확인하세요.', 'error');
+    return;
+  }
+  try {
+    console.log('MSAL 초기화 시작...');
+    msalInstance = new msal.PublicClientApplication(msalConfig);
+    await msalInstance.initialize();
+    console.log('MSAL 초기화 완료');
+    const response = await msalInstance.handleRedirectPromise();
+    if (response) {
+      setAccount(response.account);
+    } else {
+      const accounts = msalInstance.getAllAccounts();
+      if (accounts.length > 0) setAccount(accounts[0]);
+      else {
+        document.getElementById('btnLogin').disabled = false;
+        showStatus('로그인 준비 완료', 'success');
+      }
+    }
+  } catch (e) {
+    console.error('MSAL 초기화 에러:', e);
+    showStatus('MSAL 초기화 실패: ' + e.message, 'error');
+  }
+}
+initMsal();
+function setAccount(account) {
+  currentAccount = account;
+  document.getElementById('loginInfo').textContent = `로그인됨: ${account.username}`;
+  document.getElementById('btnLogin').style.display = 'none';
+  document.getElementById('btnLogout').style.display = 'inline';
+  document.getElementById('btnLoadChats').disabled = false;
+  showStatus(`${account.username}으로 로그인 성공`, 'success');
+}
+async function login() {
+  if (!msalInstance) {
+    showStatus('초기화 중입니다. 잠시 후 다시 시도해주세요.', 'info');
+    return;
+  }
+  try {
+    await msalInstance.loginRedirect({ scopes });
+  } catch (e) { showStatus('로그인 실패: ' + e.message, 'error'); }
+}
+function logout() {
+  msalInstance.logoutRedirect();
+  currentAccount = null;
+  document.getElementById('loginInfo').textContent = '로그인이 필요합니다.';
+  document.getElementById('btnLogin').style.display = 'inline';
+  document.getElementById('btnLogout').style.display = 'none';
+  document.getElementById('btnLoadChats').disabled = true;
+}
+async function getToken() {
+  const request = { scopes, account: currentAccount };
+  try {
+    return (await msalInstance.acquireTokenSilent(request)).accessToken;
+  } catch {
+    await msalInstance.acquireTokenRedirect(request);
+    return null;
+  }
+}
+async function callGraph(endpoint) {
+  const token = await getToken();
+  const res = await fetch(`https://graph.microsoft.com/v1.0${endpoint}`, {
+    headers: { Authorization: `Bearer ${token}` }
+  });
+  if (!res.ok) throw new Error(`API 오류: ${res.status} ${await res.text()}`);
+  return res.json();
+}
+async function postGraph(endpoint, body) {
+  const token = await getToken();
+  const res = await fetch(`https://graph.microsoft.com/v1.0${endpoint}`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify(body)
+  });
+  if (!res.ok) throw new Error(`API 오류: ${res.status} ${await res.text()}`);
+  return res.json();
+}
+async function loadChats() {
+  showStatus('채팅 목록 불러오는 중...', 'info');
+  try {
+    let allChats = [];
+    let chatNextLink = "/me/chats?$expand=members,lastMessagePreview&$top=50";
+    while (chatNextLink) {
+      const data = chatNextLink.startsWith('http') 
+        ? await fetch(chatNextLink, { headers: { Authorization: `Bearer ${await getToken()}` } }).then(r => r.json())
+        : await callGraph(chatNextLink);
+      allChats = allChats.concat(data.value);
+      chatNextLink = data['@odata.nextLink'] || null;
+      showStatus(`채팅 ${allChats.length}개 로드 중...`, 'info');
+    }
+    console.log('채팅 목록:', allChats);
+    
+    const chatList = document.getElementById('chatList');
+    chatList.innerHTML = allChats.map(chat => {
+      let chatName = chat.topic;
+      let initials = '?';
+      if (!chatName && chat.members) {
+        const memberNames = chat.members
+          .filter(m => m.displayName)
+          .map(m => m.displayName);
+        chatName = memberNames.slice(0, 3).join(', ') || '채팅';
+        if (memberNames.length > 3) chatName += ` 외 ${memberNames.length - 3}명`;
+        initials = memberNames[0]?.charAt(0)?.toUpperCase() || '?';
+      } else {
+        initials = chatName?.charAt(0)?.toUpperCase() || '?';
+      }
+      const preview = chat.lastMessagePreview?.body?.content?.replace(/<[^>]+>/g, '').substring(0, 50) || '';
+      const typeLabel = chat.chatType === 'group' ? '그룹' : chat.chatType === 'oneOnOne' ? '1:1' : chat.chatType;
+      return `<div class="chat-item" data-chatid="${chat.id}" onclick="selectChat(this, '${chat.id}')">
+        <div class="chat-avatar">${initials}</div>
+        <div class="chat-info">
+          <div class="chat-name">${chatName || chat.id.substring(0, 20)}</div>
+          <div class="chat-preview">${preview || '메시지 없음'}</div>
+        </div>
+        <span class="chat-type">${typeLabel}</span>
+      </div>`;
+    }).join('');
+    
+    showStatus(`${allChats.length}개의 채팅을 불러왔습니다. 채팅을 클릭하여 선택하세요.`, 'success');
+  } catch (e) { 
+    console.error('채팅 불러오기 에러:', e);
+    showStatus('채팅 불러오기 실패: ' + e.message, 'error'); 
+  }
+}
+
+function selectChat(element, chatId) {
+  document.querySelectorAll('.chat-item').forEach(el => el.classList.remove('selected'));
+  element.classList.add('selected');
+  document.getElementById('chatSelect').value = chatId;
+  onChatSelected();
+}
+
+function onChatSelected() {
+  const hasChat = !!document.getElementById('chatSelect').value;
+  document.getElementById('btnLoadMsgs').disabled = !hasChat;
+  document.getElementById('btnLoadAll').disabled = !hasChat;
+}
+
+function parseMessages() {
+  const text = document.getElementById('manualMessages').value.trim();
+  if (!text) {
+    showStatus('메시지를 입력하세요.', 'error');
+    return;
+  }
+  const lines = text.split('\n').filter(line => line.trim());
+  messages = lines.map((line, i) => {
+    // 다양한 형식 파싱 시도
+    // 형식1: 2024-03-10 10:30 홍길동: 내용
+    // 형식2: [10:30] 홍길동: 내용
+    // 형식3: 홍길동: 내용
+    let sender = '알 수 없음';
+    let content = line;
+    let time = new Date().toLocaleString('ko-KR');
+    
+    // 날짜/시간 + 이름: 내용 형식
+    const match1 = line.match(/^(\d{4}[-\/]\d{1,2}[-\/]\d{1,2}\s+\d{1,2}:\d{2}(?::\d{2})?)\s+([^:]+):\s*(.*)$/);
+    if (match1) {
+      time = match1[1];
+      sender = match1[2].trim();
+      content = match1[3];
+    } else {
+      // [시간] 이름: 내용 형식
+      const match2 = line.match(/^\[?(\d{1,2}:\d{2}(?::\d{2})?)\]?\s+([^:]+):\s*(.*)$/);
+      if (match2) {
+        time = match2[1];
+        sender = match2[2].trim();
+        content = match2[3];
+      } else {
+        // 이름: 내용 형식
+        const match3 = line.match(/^([^:]+):\s*(.*)$/);
+        if (match3) {
+          sender = match3[1].trim();
+          content = match3[2];
+        }
+      }
+    }
+    return { idx: i, sender, time, content };
+  });
+  
+  renderManualMessages();
+  showStatus(`${messages.length}개 메시지가 분석되었습니다.`, 'success');
+}
+
+function renderManualMessages() {
+  document.getElementById('msgList').innerHTML = messages.map((m, i) => {
+    return `<div class="msg-row"><label style="display:flex;align-items:flex-start;gap:10px;cursor:pointer;"><input type="checkbox" class="msgCheck" data-idx="${i}" checked onchange="updateCount()" style="margin-top:4px;"><div style="flex:1;"><span class="sender">${m.sender}</span><span class="time">${m.time}</span><div class="content">${m.content || '(내용 없음)'}</div></div></label></div>`;
+  }).join('');
+  document.getElementById('msgControls').style.display = 'block';
+  document.getElementById('btnSync').disabled = false;
+  updateCount();
+}
+async function renderMessages() {
+  const token = await getToken();
+  document.getElementById('msgList').innerHTML = await Promise.all(messages.map(async (m, i) => {
+    const sender = m.from?.user?.displayName || '알 수 없음';
+    const time = new Date(m.createdDateTime).toLocaleString('ko-KR');
+    let content = m.body?.content || '';
+    let mediaHtml = '';
+    
+    // 인라인 이미지 URL 추출 및 표시
+    const imgMatches = content.match(/<img[^>]+src="([^"]+)"[^>]*>/gi) || [];
+    for (const imgTag of imgMatches) {
+      const srcMatch = imgTag.match(/src="([^"]+)"/);
+      if (srcMatch && srcMatch[1]) {
+        let imgUrl = srcMatch[1];
+        // Teams 호스팅 이미지인 경우 인증 헤더 필요
+        if (imgUrl.includes('graph.microsoft.com') || imgUrl.includes('teams.microsoft.com')) {
+          mediaHtml += `<div class="hosted-img" data-url="${imgUrl}" style="color:#0078d4; font-size:12px;">[이미지 로딩중...]</div>`;
+        } else {
+          mediaHtml += `<img src="${imgUrl}" style="max-width:200px; max-height:150px; border-radius:8px; margin:4px 0;" onerror="this.outerHTML='[이미지 로드 실패]'">`;
+        }
+      }
+    }
+    
+    // 첨부파일 처리
+    if (m.attachments && m.attachments.length > 0) {
+      for (const att of m.attachments) {
+        if (att.contentType?.startsWith('image/')) {
+          mediaHtml += `<div style="color:#0078d4; font-size:12px;">📷 ${att.name || '이미지'}</div>`;
+        } else if (att.contentType?.startsWith('video/')) {
+          mediaHtml += `<div style="color:#0078d4; font-size:12px;">🎬 ${att.name || '동영상'}</div>`;
+        } else {
+          mediaHtml += `<div style="color:#666; font-size:12px;">📎 ${att.name || '첨부파일'}</div>`;
+        }
+      }
+    }
+    
+    // HTML 태그 제거하고 텍스트만 추출
+    const tempDiv = document.createElement('div');
+    tempDiv.innerHTML = content.replace(/<img[^>]*>/gi, '');
+    const textContent = tempDiv.textContent || tempDiv.innerText || '';
+    
+    return `<div class="msg-row">
+      <input type="checkbox" class="msgCheck" data-idx="${i}" checked onchange="updateCount()">
+      <div class="msg-bubble">
+        <div class="msg-header"><span class="sender">${sender}</span><span class="time">${time}</span></div>
+        <div class="content">${textContent || ''}</div>
+        ${mediaHtml ? `<div class="media-content" style="margin-top:8px;">${mediaHtml}</div>` : ''}
+      </div>
+    </div>`;
+  })).then(arr => arr.join(''));
+  document.getElementById('msgControls').style.display = 'block';
+  document.getElementById('btnParse').disabled = false;
+  updateCount();
+}
+
+// 메시지에서 주간 보고서 데이터 추출
+function parseToReport() {
+  const selectedMsgs = getSelectedMessages();
+  if (selectedMsgs.length === 0) {
+    showStatus('분석할 메시지를 선택하세요.', 'error');
+    return;
+  }
+  
+  // 현재 날짜 기준으로 월/주차 계산
+  const now = new Date();
+  const month = now.getMonth() + 1;
+  const weekOfMonth = Math.ceil(now.getDate() / 7);
+  
+  // 메시지 텍스트 합치기
+  const allText = selectedMsgs.map(m => `[${m.sender}] ${m.content}`).join('\n');
+  
+  // 키워드 기반 파싱
+  const goals = [];
+  const tasks = [];
+  const results = [];
+  const deadlines = [];
+  
+  const lines = allText.split('\n');
+  for (const line of lines) {
+    const lowerLine = line.toLowerCase();
+    // 목표 관련 키워드
+    if (lowerLine.includes('목표') || lowerLine.includes('goal') || lowerLine.includes('계획')) {
+      goals.push(line.replace(/^\[.*?\]\s*/, ''));
+    }
+    // 과제/할일 관련 키워드
+    if (lowerLine.includes('과제') || lowerLine.includes('task') || lowerLine.includes('할일') || lowerLine.includes('작업')) {
+      tasks.push(line.replace(/^\[.*?\]\s*/, ''));
+    }
+    // 결과/완료 관련 키워드
+    if (lowerLine.includes('결과') || lowerLine.includes('완료') || lowerLine.includes('달성') || lowerLine.includes('done')) {
+      results.push(line.replace(/^\[.*?\]\s*/, ''));
+    }
+    // 기한 관련 키워드
+    if (lowerLine.includes('기한') || lowerLine.includes('까지') || lowerLine.includes('deadline') || lowerLine.match(/\d+월\s*\d+일/)) {
+      deadlines.push(line.replace(/^\[.*?\]\s*/, ''));
+    }
+  }
+  
+  // 파싱 결과 저장
+  parsedReport = {
+    month: `${month}월`,
+    week: `${weekOfMonth}주차`,
+    goal: goals.join('\n') || '(메시지에서 목표 추출 필요)',
+    goalDeadline: deadlines[0] || '',
+    task: tasks.join('\n') || '(메시지에서 과제 추출 필요)',
+    taskDeadline: deadlines[1] || deadlines[0] || '',
+    result: results.join('\n') || '(메시지에서 결과 추출 필요)',
+    summary: `${selectedMsgs.length}개 메시지 요약: ` + selectedMsgs.slice(0, 3).map(m => m.content.substring(0, 50)).join(' / ')
+  };
+  
+  // 미리보기 표시
+  document.getElementById('reportPreview').style.display = 'block';
+  document.getElementById('reportData').innerHTML = `
+    <div style="display:grid; grid-template-columns:100px 1fr; gap:8px;">
+      <strong>월:</strong><span><input type="text" id="editMonth" value="${parsedReport.month}" style="width:100%;"></span>
+      <strong>주차:</strong><span><input type="text" id="editWeek" value="${parsedReport.week}" style="width:100%;"></span>
+      <strong>목표:</strong><span><textarea id="editGoal" style="width:100%; height:60px;">${parsedReport.goal}</textarea></span>
+      <strong>목표기한:</strong><span><input type="date" id="editGoalDeadline" value="${parsedReport.goalDeadline}" style="width:100%;"></span>
+      <strong>과제:</strong><span><textarea id="editTask" style="width:100%; height:60px;">${parsedReport.task}</textarea></span>
+      <strong>과제기한:</strong><span><input type="date" id="editTaskDeadline" value="${parsedReport.taskDeadline}" style="width:100%;"></span>
+      <strong>금주결과:</strong><span><textarea id="editResult" style="width:100%; height:60px;">${parsedReport.result}</textarea></span>
+      <strong>주간요약:</strong><span><textarea id="editSummary" style="width:100%; height:60px;">${parsedReport.summary}</textarea></span>
+    </div>
+    <p style="margin-top:10px; color:#666; font-size:12px;">* 내용을 직접 수정한 후 Excel에 추가하세요.</p>
+  `;
+  document.getElementById('btnSync').disabled = false;
+  showStatus('보고서 데이터가 추출되었습니다. 내용을 확인/수정 후 Excel에 추가하세요.', 'success');
+}
+
+async function loadMessages() {
+  const chatId = document.getElementById('chatSelect').value;
+  const startDate = document.getElementById('startDate').value;
+  const endDate = document.getElementById('endDate').value;
+  if (!chatId) return;
+  if (!startDate || !endDate) {
+    showStatus('시작일과 종료일을 모두 선택하세요.', 'error');
+    return;
+  }
+  showStatus('메시지 불러오는 중...', 'info');
+  try {
+    const start = new Date(startDate).toISOString();
+    const end = new Date(endDate + 'T23:59:59').toISOString();
+    let allMsgs = [];
+    let msgNextLink = `/chats/${chatId}/messages?$top=50`;
+    let done = false;
+    while (msgNextLink && !done) {
+      const data = msgNextLink.startsWith('http')
+        ? await fetch(msgNextLink, { headers: { Authorization: `Bearer ${await getToken()}` } }).then(r => r.json())
+        : await callGraph(msgNextLink);
+      for (const m of data.value) {
+        if (m.messageType !== 'message') continue;
+        const msgDate = new Date(m.createdDateTime);
+        if (msgDate < new Date(startDate)) { done = true; break; }
+        if (msgDate >= new Date(startDate) && msgDate <= new Date(end)) {
+          allMsgs.push(m);
+        }
+      }
+      msgNextLink = data['@odata.nextLink'] || null;
+      showStatus(`${allMsgs.length}개 메시지 로드 중...`, 'info');
+    }
+    messages = allMsgs;
+    renderMessages();
+    showStatus(`${messages.length}개의 메시지를 불러왔습니다. (${startDate} ~ ${endDate})`, 'success');
+  } catch (e) { 
+    console.error('메시지 에러:', e);
+    showStatus('메시지 불러오기 실패: ' + e.message, 'error'); 
+  }
+}
+
+async function loadAllMessages() {
+  const chatId = document.getElementById('chatSelect').value;
+  if (!chatId) return;
+  showStatus('전체 메시지 불러오는 중... (시간이 걸릴 수 있습니다)', 'info');
+  try {
+    let allMsgs = [];
+    let msgNextLink = `/chats/${chatId}/messages?$top=50`;
+    while (msgNextLink) {
+      const data = msgNextLink.startsWith('http')
+        ? await fetch(msgNextLink, { headers: { Authorization: `Bearer ${await getToken()}` } }).then(r => r.json())
+        : await callGraph(msgNextLink);
+      const filtered = data.value.filter(m => m.messageType === 'message');
+      allMsgs = allMsgs.concat(filtered);
+      msgNextLink = data['@odata.nextLink'] || null;
+      showStatus(`${allMsgs.length}개 메시지 로드 중...`, 'info');
+    }
+    messages = allMsgs;
+    renderMessages();
+    showStatus(`총 ${messages.length}개의 전체 메시지를 불러왔습니다.`, 'success');
+  } catch (e) {
+    console.error('메시지 에러:', e);
+    showStatus('메시지 불러오기 실패: ' + e.message, 'error');
+  }
+}
+function selectAll(checked) {
+  document.querySelectorAll('.msgCheck').forEach(cb => cb.checked = checked);
+  updateCount();
+}
+function updateCount() {
+  const checked = document.querySelectorAll('.msgCheck:checked').length;
+  const total = document.querySelectorAll('.msgCheck').length;
+  document.getElementById('selectedCount').textContent = `${checked}/${total}개 선택됨`;
+}
+function getSelectedMessages() {
+  const selected = [];
+  document.querySelectorAll('.msgCheck:checked').forEach(cb => {
+    const m = messages[parseInt(cb.dataset.idx)];
+    selected.push({
+      time: m.time || m.createdDateTime,
+      sender: m.sender || m.from?.user?.displayName || '알 수 없음',
+      content: m.content || m.body?.content?.replace(/<[^>]+>/g, '') || ''
+    });
+  });
+  return selected;
+}
+function encodeShareUrl(url) {
+  // SharePoint 공유 URL을 Graph API용 shareId로 변환
+  const base64 = btoa(url).replace(/=/g, '').replace(/\//g, '_').replace(/\+/g, '-');
+  return 'u!' + base64;
+}
+
+async function syncToExcel() {
+  const sheetName = document.getElementById('sheetName').value.trim() || 'Sheet1';
+  const startRow = parseInt(document.getElementById('startRow').value) || 2;
+  
+  // 편집된 값 가져오기
+  const reportData = {
+    month: document.getElementById('editMonth')?.value || parsedReport?.month || '',
+    week: document.getElementById('editWeek')?.value || parsedReport?.week || '',
+    goal: document.getElementById('editGoal')?.value || parsedReport?.goal || '',
+    goalDeadline: document.getElementById('editGoalDeadline')?.value || parsedReport?.goalDeadline || '',
+    task: document.getElementById('editTask')?.value || parsedReport?.task || '',
+    taskDeadline: document.getElementById('editTaskDeadline')?.value || parsedReport?.taskDeadline || '',
+    result: document.getElementById('editResult')?.value || parsedReport?.result || '',
+    summary: document.getElementById('editSummary')?.value || parsedReport?.summary || ''
+  };
+  
+  if (!reportData.month && !reportData.goal) {
+    showStatus('먼저 메시지를 분석하여 보고서를 생성하세요.', 'error');
+    return;
+  }
+  
+  // 컬럼 설정 가져오기
+  const cols = {
+    month: document.getElementById('colMonth').value.toUpperCase(),
+    week: document.getElementById('colWeek').value.toUpperCase(),
+    goal: document.getElementById('colGoal').value.toUpperCase(),
+    goalDeadline: document.getElementById('colGoalDeadline').value.toUpperCase(),
+    task: document.getElementById('colTask').value.toUpperCase(),
+    taskDeadline: document.getElementById('colTaskDeadline').value.toUpperCase(),
+    result: document.getElementById('colResult').value.toUpperCase(),
+    summary: document.getElementById('colSummary').value.toUpperCase()
+  };
+  
+  showStatus('Excel에 보고서 추가 중...', 'info');
+  document.getElementById('btnSync').disabled = true;
+  
+  try {
+    const token = await getToken();
+    const excelUrl = document.getElementById('excelUrl').value.trim();
+    
+    if (!excelUrl) {
+      showStatus('Excel 공유 링크를 입력하세요.', 'error');
+      document.getElementById('btnSync').disabled = false;
+      return;
+    }
+    
+    // 본인 OneDrive 파일 경로 (공유 파일은 관리자 권한 필요)
+    const filePath = excelUrl.startsWith('/') ? excelUrl : '/주간보고.xlsx';
+    console.log('File Path:', filePath);
+    
+    showStatus('Excel 파일에 쓰는 중...', 'info');
+    
+    // 모든 데이터를 한 번에 쓰기 (A~H열)
+    const rowData = [
+      reportData.month,
+      reportData.week, 
+      reportData.goal,
+      reportData.goalDeadline,
+      reportData.task,
+      reportData.taskDeadline,
+      reportData.result,
+      reportData.summary
+    ];
+    
+    // 범위 계산 (A부터 H까지)
+    const range = `${cols.month}${startRow}:${cols.summary}${startRow}`;
+    console.log('Writing to range:', range, rowData);
+    
+    const res = await fetch(`https://graph.microsoft.com/v1.0/me/drive/root:${filePath}:/workbook/worksheets('${sheetName}')/range(address='${range}')`, {
+      method: 'PATCH',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ values: [rowData] })
+    });
+    
+    if (!res.ok) {
+      const errText = await res.text();
+      console.error('Excel API Error:', errText);
+      throw new Error(`Excel 쓰기 실패: ${errText}`);
+    }
+    
+    showStatus(`✅ 보고서가 Excel ${sheetName} 시트 ${startRow}행에 추가됐습니다!`, 'success');
+    
+    // 다음 행으로 자동 증가
+    document.getElementById('startRow').value = startRow + 1;
+    
+  } catch (e) { 
+    console.error('Excel 에러:', e);
+    showStatus('Excel 추가 실패: ' + e.message, 'error'); 
+  }
+  finally { document.getElementById('btnSync').disabled = false; }
+}
+function showStatus(msg, type) {
+  const el = document.getElementById('status');
+  el.textContent = msg;
+  el.className = type;
+}
+</script>
+</body>
+</html>
